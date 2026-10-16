@@ -1,5 +1,51 @@
 # 🏗️ Plan Implementacji Pipeline'u: Databricks Order Events Platform
 
+## SETUP — Środowisko Deweloperskie
+
+Ten krok dzieje się **poza Databricks**, zanim zaczniemy pisać kod pipeline'u.
+
+### Co należy do SETUP
+
+| Krok | Opis | Status |
+|---|---|---|
+| Repozytorium GitHub | Prywatne repo `order-events-platform` | ✅ Gotowe |
+| Struktura plików lokalnie | `notebooks/`, `dlt/`, `databricks.yml`, pliki `.md` | ✅ Gotowe |
+| Git Folders w Databricks | Podłączenie repo do Databricks Workspace | ⏳ Do zrobienia |
+| Wgranie danych źródłowych | Pliki `batch_*.json` i `products.csv` do Unity Catalog Volume | ⏳ Do zrobienia |
+
+### Workflow Deweloperski
+
+```
+VS Code (lokalnie)
+    │
+    │  edytujesz .py i .yml
+    │
+    ▼
+git push → GitHub
+    │
+    │  Databricks Git Folders (odśwież)
+    ▼
+Databricks — uruchamiasz notebooki i Job
+```
+
+### Struktura Repozytorium
+
+```
+order-events-platform/
+├── notebooks/
+│   ├── 01_prepare_bronze.py
+│   ├── 02_build_silver_and_gold.py
+│   └── 03_quality_check.py
+├── dlt/
+│   └── dlt_design_example.py
+├── databricks.yml
+├── implementation_plan.md
+├── engineering_notes.md
+└── self_review.md
+```
+
+---
+
 ## 📊 Analiza Danych Wejściowych — Co Wiemy
 
 Zanim przejdę do planu, wypiszę kluczowe obserwacje z analizy plików danych, bo one determinują **każdą** decyzję architektoniczną.
