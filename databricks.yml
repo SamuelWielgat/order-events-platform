@@ -1,0 +1,14 @@
+bundle:
+  name: order_events_platform
+
+targets:
+  dev:
+    mode: development
+    default: true
+
+resources:
+  jobs:
+    order_events_platform:
+      name: order_events_platform
+
+      # TODO: uzupełnić zgodnie z implementation_plan.md, Etap 4
