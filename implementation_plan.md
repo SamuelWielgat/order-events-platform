@@ -10,8 +10,8 @@ Ten krok dzieje się **poza Databricks**, zanim zaczniemy pisać kod pipeline'u.
 |---|---|---|
 | Repozytorium GitHub | Prywatne repo `order-events-platform` | ✅ Gotowe |
 | Struktura plików lokalnie | `notebooks/`, `dlt/`, `databricks.yml`, pliki `.md` | ✅ Gotowe |
-| Git Folders w Databricks | Podłączenie repo do Databricks Workspace | ⏳ Do zrobienia |
-| Wgranie danych źródłowych | Pliki `batch_*.json` i `products.csv` do Unity Catalog Volume | ⏳ Do zrobienia |
+| Git Folders w Databricks | Podłączenie repo do Databricks Workspace | ✅ Gotowe |
+| Wgranie danych źródłowych | Pliki `batch_*.json` i `products.csv` do Unity Catalog Volume | ✅ Gotowe |
 
 ### Workflow Deweloperski
 
@@ -130,17 +130,25 @@ prepare_bronze  ──→  build_silver_and_gold  ──→  quality_check
 
 **Decyzja: Unity Catalog Volume vs Workspace Files**
 - Wybieram **Unity Catalog Volume** — daje pełną integrację z lineage, access control przez UC oraz jest zgodny z kierunkiem rozwoju Databricks
-- Ścieżka plików źródłowych: `/Volumes/<catalog>/<schema>/raw_data/orders/` i `.../reference/`
+- Pliki wgrane **płasko** (bez podfolderów) — domyślne zachowanie UI Databricks
+- Ścieżka bazowa: `/Volumes/workspace/de_course_module_03_project/raw_data`
 
 ### 0.2 Parametry Globalne (widgety)
 
-| Parametr | Domyślna wartość | Opis |
+| Parametr | Wartość | Opis |
 |---|---|---|
-| `catalog_name` | `""` (auto-detect) | Unity Catalog |
+| `catalog_name` | `workspace` | Unity Catalog |
 | `schema_name` | `de_course_module_03_project` | Schema |
-| `data_base_path` | ścieżka do Volume | Katalog z plikami |
+| `data_base_path` | `/Volumes/workspace/de_course_module_03_project/raw_data` | Katalog z plikami |
 | `batch_id` | `batch_001` | Który batch przetwarzamy |
 | `run_id` | `manual_run` | ID uruchomienia (do audytu) |
+
+**Ścieżki plików:**
+
+| Plik | Ścieżka |
+|---|---|
+| Orders batch | `{data_base_path}/{batch_id}_orders.json` |
+| Products | `{data_base_path}/products.csv` |
 
 ### 0.3 Kolejność Testowania
 
