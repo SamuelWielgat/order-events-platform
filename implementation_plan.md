@@ -130,8 +130,8 @@ prepare_bronze  ──→  build_silver_and_gold  ──→  quality_check
 
 **Decyzja: Unity Catalog Volume vs Workspace Files**
 - Wybieram **Unity Catalog Volume** — daje pełną integrację z lineage, access control przez UC oraz jest zgodny z kierunkiem rozwoju Databricks
-- Pliki wgrane **płasko** (bez podfolderów) — domyślne zachowanie UI Databricks
-- Ścieżka bazowa: `/Volumes/workspace/de_course_module_03_project/raw_data`
+- Pliki wgrane z podfolderami `data/orders/` i `data/reference/`
+- Ścieżka bazowa: `/Volumes/workspace/de_course_module_03_project/raw_data/data`
 
 ### 0.2 Parametry Globalne (widgety)
 
@@ -139,7 +139,7 @@ prepare_bronze  ──→  build_silver_and_gold  ──→  quality_check
 |---|---|---|
 | `catalog_name` | `workspace` | Unity Catalog |
 | `schema_name` | `de_course_module_03_project` | Schema |
-| `data_base_path` | `/Volumes/workspace/de_course_module_03_project/raw_data` | Katalog z plikami |
+| `data_base_path` | `/Volumes/workspace/de_course_module_03_project/raw_data/data` | Katalog z plikami |
 | `batch_id` | `batch_001` | Który batch przetwarzamy |
 | `run_id` | `manual_run` | ID uruchomienia (do audytu) |
 
@@ -147,8 +147,8 @@ prepare_bronze  ──→  build_silver_and_gold  ──→  quality_check
 
 | Plik | Ścieżka |
 |---|---|
-| Orders batch | `{data_base_path}/{batch_id}_orders.json` |
-| Products | `{data_base_path}/products.csv` |
+| Orders batch | `{data_base_path}/orders/{batch_id}_orders.json` |
+| Products | `{data_base_path}/reference/products.csv` |
 
 ### 0.3 Kolejność Testowania
 

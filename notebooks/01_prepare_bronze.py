@@ -29,7 +29,7 @@ from pyspark.sql.types import (
 
 dbutils.widgets.text("catalog_name",   "workspace")
 dbutils.widgets.text("schema_name",    "de_course_module_03_project")
-dbutils.widgets.text("data_base_path", "/Volumes/workspace/de_course_module_03_project/raw_data")
+dbutils.widgets.text("data_base_path", "/Volumes/workspace/de_course_module_03_project/raw_data/data")
 dbutils.widgets.text("batch_id",       "batch_001")
 dbutils.widgets.text("run_id",         "manual_run")
 
@@ -45,7 +45,7 @@ if not catalog_name:
 
 database_name = f"{catalog_name}.{schema_name}"
 bronze_table  = f"{database_name}.bronze_order_events"
-source_path   = f"{data_base_path}/{batch_id}_orders.json"
+source_path   = f"{data_base_path}/orders/{batch_id}_orders.json"
 
 print(f"catalog   : {catalog_name}")
 print(f"schema    : {schema_name}")
