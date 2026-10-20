@@ -1,8 +1,4 @@
 # Databricks notebook source
-# /// script
-# [tool.databricks.environment]
-# environment_version = "6"
-# ///
 # Notebook 01 — Prepare Bronze
 #
 # Odpowiedzialność:
@@ -70,12 +66,14 @@ spark.sql(f"CREATE SCHEMA IF NOT EXISTS {database_name}")
 # COMMAND ----------
 
 # MAGIC %md ## 3. Jawny schema dla JSON
-# MAGIC #
-# MAGIC # Dlaczego jawny schema:
-# MAGIC #   - Spark nie skanuje całego pliku żeby wykryć typy — szybciej i deterministycznie
-# MAGIC #   - Pola spoza schematu (np. source_priority z batch_003) są ignorowane
-# MAGIC #     — to świadoma decyzja: schema enforcement na warstwie Bronze
-# MAGIC #   - event_ts wczytujemy jako String, konwertujemy do Timestamp przez to_timestamp()
+
+# COMMAND ----------
+
+# Dlaczego jawny schema:
+#   - Spark nie skanuje całego pliku żeby wykryć typy — szybciej i deterministycznie
+#   - Pola spoza schematu (np. source_priority z batch_003) są ignorowane
+#     — to świadoma decyzja: schema enforcement na warstwie Bronze
+#   - event_ts wczytujemy jako String, konwertujemy do Timestamp przez to_timestamp()
 
 # COMMAND ----------
 
@@ -120,12 +118,14 @@ display(raw_df)
 # COMMAND ----------
 
 # MAGIC %md ## 5. Idempotentny zapis do Bronze — MERGE po event_id
-# MAGIC #
-# MAGIC # Dlaczego MERGE, a nie INSERT lub overwrite:
-# MAGIC #   - WHEN NOT MATCHED THEN INSERT — wstawia tylko nowe eventy
-# MAGIC #   - Brak WHEN MATCHED UPDATE — Bronze jest append-only, nie nadpisujemy raw danych
-# MAGIC #   - Uruchomienie tego samego batcha dwa razy nie duplikuje danych
-# MAGIC #   - MERGE jest atomiczny — bezpieczny przy równoległych uruchomieniach
+
+# COMMAND ----------
+
+# Dlaczego MERGE, a nie INSERT lub overwrite:
+#   - WHEN NOT MATCHED THEN INSERT — wstawia tylko nowe eventy
+#   - Brak WHEN MATCHED UPDATE — Bronze jest append-only, nie nadpisujemy raw danych
+#   - Uruchomienie tego samego batcha dwa razy nie duplikuje danych
+#   - MERGE jest atomiczny — bezpieczny przy równoległych uruchomieniach
 
 # COMMAND ----------
 
@@ -171,16 +171,17 @@ display(spark.sql(f"DESCRIBE HISTORY {bronze_table}"))
 # COMMAND ----------
 
 # MAGIC %md ## 8. Notatka: schema enforcement z batch_003
-# MAGIC #
-# MAGIC # batch_003 zawiera pole source_priority, którego nie ma w order_schema.
-# MAGIC # Spark z jawnym schematem ignoruje nieznane pola — kolumna NIE pojawia się w tabeli.
-# MAGIC # To jest pożądane zachowanie na warstwie Bronze (schema enforcement).
-# MAGIC #
-# MAGIC # Żeby świadomie dodać kolumnę (schema evolution), wykonaj poniższe i ponownie
-# MAGIC # wczytaj batch_003 z rozszerzonym schematem order_schema:
-# MAGIC #
-# MAGIC #   spark.sql(f"ALTER TABLE {bronze_table} ADD COLUMN source_priority STRING")
-# MAGIC #
-# MAGIC # Decyzja w tym projekcie: source_priority zostaje poza Bronze.
-# MAGIC # Uzasadnienie: pole nie jest wymagane przez żadną warstwę downstream.
-# MAGIC
+
+# COMMAND ----------
+
+# batch_003 zawiera pole source_priority, którego nie ma w order_schema.
+# Spark z jawnym schematem ignoruje nieznane pola — kolumna NIE pojawia się w tabeli.
+# To jest pożądane zachowanie na warstwie Bronze (schema enforcement).
+#
+# Żeby świadomie dodać kolumnę (schema evolution), wykonaj poniższe i ponownie
+# wczytaj batch_003 z rozszerzonym schematem order_schema:
+#
+#   spark.sql(f"ALTER TABLE {bronze_table} ADD COLUMN source_priority STRING")
+#
+# Decyzja w tym projekcie: source_priority zostaje poza Bronze.
+# Uzasadnienie: pole nie jest wymagane przez żadną warstwę downstream.
