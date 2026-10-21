@@ -233,17 +233,15 @@ display(silver_items_df.orderBy("order_id", "product_id"))
 print(f"Zapisano {spark.table(silver_items_table).count()} rekordów do {silver_items_table}")
 
 # COMMAND ----------
-# MAGIC %md ## 8. Cache silver_items_df przed budową Gold
+# MAGIC %md ## 8. Notatka: cache na Serverless
 #
-# silver_items_df jest używany przez dwie tabele Gold (daily i category).
-# Cache pozwala uniknąć podwójnego przeliczenia tego samego DataFrame.
-# Poza tym przypadkiem cache nie jest używany w tym pipeline'ie.
-
-# COMMAND ----------
-
-silver_items_cached_df = spark.table(silver_items_table).cache()
-silver_items_cached_df.count()  # materializacja cache
-print("silver_items_df zcachowany.")
+# cache() / PERSIST TABLE nie jest wspierany na Databricks Serverless compute.
+# Na klasycznym klastrze można byłoby użyć:
+#   silver_items_cached_df = spark.table(silver_items_table).cache()
+# żeby uniknąć podwójnego odczytu przy budowie dwóch tabel Gold.
+#
+# Na Serverless: obie tabele Gold czytają z zapisanej tabeli Delta —
+# Delta jest zoptymalizowana pod odczyt i nie wymaga cache.
 
 # COMMAND ----------
 # MAGIC %md ## 9. Gold — gold_daily_sales
@@ -255,7 +253,7 @@ print("silver_items_df zcachowany.")
 # COMMAND ----------
 
 daily_sales_df = (
-    silver_items_cached_df
+    spark.table(silver_items_table)
     .where((F.col("status") == "PAID") & (F.col("is_valid_item") == True))
     .withColumn("order_date", F.to_date("event_ts"))
     .groupBy("order_date")
@@ -291,7 +289,7 @@ display(spark.table(gold_daily_table))
 # COMMAND ----------
 
 category_sales_df = (
-    silver_items_cached_df
+    spark.table(silver_items_table)
     .where((F.col("status") == "PAID") & (F.col("is_valid_item") == True))
     .withColumn("order_date", F.to_date("event_ts"))
     .withColumn("category", F.coalesce(F.col("category"), F.lit("Unknown")))
@@ -313,14 +311,6 @@ category_sales_df = (
 
 print(f"Zapisano {spark.table(gold_category_table).count()} rekordów do {gold_category_table}")
 display(spark.table(gold_category_table))
-
-# COMMAND ----------
-# MAGIC %md ## 11. Unpin cache
-
-# COMMAND ----------
-
-silver_items_cached_df.unpersist()
-print("Cache zwolniony.")
 
 # COMMAND ----------
 # MAGIC %md ## 12. DESCRIBE HISTORY — silver_orders_current
