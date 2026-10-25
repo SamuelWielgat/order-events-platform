@@ -1,6 +1,8 @@
 bundle:
-  name: order_events_platform
+  name: module_03_order_events_project
 
+# Host i credentials NIE są trzymane w repo — CLI korzysta z profilu
+# w ~/.databrickscfg (plik jest w .gitignore).
 targets:
   dev:
     mode: development
@@ -9,6 +11,73 @@ targets:
 resources:
   jobs:
     order_events_platform:
-      name: order_events_platform
+      name: module_03_order_events_platform
 
-      # TODO: uzupełnić zgodnie z implementation_plan.md, Etap 4
+      # Limit czasu całego runu (30 min)
+      timeout_seconds: 1800
+
+      # Tabele Silver są aktualizowane przez MERGE/overwrite —
+      # równoległe runy mogłyby się wzajemnie blokować lub nadpisywać.
+      max_concurrent_runs: 1
+
+      # Parametry Joba — ten sam workflow dla różnych batchy bez edycji kodu.
+      # Każdy parametr jest jawnie mapowany na widget w base_parameters
+      # poszczególnych tasków ({{job.parameters.*}}).
+      parameters:
+        - name: catalog_name
+          default: workspace
+        - name: schema_name
+          default: de_course_module_03_project
+        - name: data_base_path
+          default: /Volumes/workspace/de_course_module_03_project/raw_data/data
+        - name: batch_id
+          default: batch_001
+        - name: run_id
+          default: bundle_dev_run
+        # Progi quality gate (notebook 03)
+        - name: max_invalid_items
+          default: "0"
+        - name: max_missing_products
+          default: "10"
+
+      # Brak definicji klastra — taski notebookowe działają na Serverless compute
+      # (Databricks Free Edition).
+      tasks:
+        # [1] Bronze — retry uzasadniony (transient failures: sieć, storage)
+        - task_key: prepare_bronze
+          notebook_task:
+            notebook_path: ./notebooks/01_prepare_bronze.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              data_base_path: "{{job.parameters.data_base_path}}"
+              batch_id: "{{job.parameters.batch_id}}"
+              run_id: "{{job.parameters.run_id}}"
+          max_retries: 2
+          min_retry_interval_millis: 30000
+
+        # [2] Silver + Gold — wymaga gotowego Bronze
+        - task_key: build_silver_and_gold
+          depends_on:
+            - task_key: prepare_bronze
+          notebook_task:
+            notebook_path: ./notebooks/02_build_silver_and_gold.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              data_base_path: "{{job.parameters.data_base_path}}"
+              batch_id: "{{job.parameters.batch_id}}"
+
+        # [3] Quality gate — hard stop, retry nie ma sensu (dane się nie zmienią)
+        - task_key: quality_check
+          depends_on:
+            - task_key: build_silver_and_gold
+          notebook_task:
+            notebook_path: ./notebooks/03_quality_check.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              batch_id: "{{job.parameters.batch_id}}"
+              max_invalid_items: "{{job.parameters.max_invalid_items}}"
+              max_missing_products: "{{job.parameters.max_missing_products}}"
+          max_retries: 0

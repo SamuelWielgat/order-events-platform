@@ -221,6 +221,7 @@ __marimo__/
 
 # Databricks / sekrety — NIGDY nie commituj
 .databrickscfg
+.databricks/
 *.token
 secrets.yml
 .env.local

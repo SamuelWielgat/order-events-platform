@@ -37,9 +37,9 @@ Projekt jest w trakcie implementacji. Poniżej pełny stan na moment przełącze
 |---|---|---|
 | `notebooks/01_prepare_bronze.py` | ✅ Kompletny | ✅ batch_001, batch_002 × 2 (idempotencja) |
 | `notebooks/02_build_silver_and_gold.py` | ✅ Kompletny | ✅ batch_001, batch_002 × 2 (idempotencja) |
-| `notebooks/03_quality_check.py` | ✅ Zaimplementowany (do przetestowania w Databricks) | ❌ |
+| `notebooks/03_quality_check.py` | ✅ Kompletny | ✅ batch_003 → FAILED: `Quality gate failed: 1 invalid quantity records found (max_invalid_items=0)` |
 | `dlt/dlt_design_example.py` | ⏳ Szkielet — DO IMPLEMENTACJI | — |
-| `databricks.yml` | ⏳ Szkielet — DO IMPLEMENTACJI | — |
+| `databricks.yml` | ✅ Napisany (3 taski, parametry Joba) | ❌ `bundle validate/deploy/run` jeszcze nie uruchamiane |
 
 ---
 
