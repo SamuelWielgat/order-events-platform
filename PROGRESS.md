@@ -38,8 +38,8 @@ Projekt jest w trakcie implementacji. Poniżej pełny stan na moment przełącze
 | `notebooks/01_prepare_bronze.py` | ✅ Kompletny | ✅ batch_001, batch_002 × 2 (idempotencja) |
 | `notebooks/02_build_silver_and_gold.py` | ✅ Kompletny | ✅ batch_001, batch_002 × 2 (idempotencja) |
 | `notebooks/03_quality_check.py` | ✅ Kompletny | ✅ batch_003 → FAILED: `Quality gate failed: 1 invalid quantity records found (max_invalid_items=0)` |
-| `dlt/dlt_design_example.py` | ⏳ Szkielet — DO IMPLEMENTACJI | — |
-| `databricks.yml` | ✅ Napisany (3 taski, parametry Joba) | ❌ `bundle validate/deploy/run` jeszcze nie uruchamiane |
+| `dlt/dlt_design_example.py` | ✅ Szkic gotowy (Auto Loader, apply_changes, expectations, Gold MV) | — nie deployowany ani uruchamiany (zgodnie z wymaganiami kursu) |
+| `databricks.yml` | ✅ Kompletny (3 taski, parametry Joba, `base_parameters`) | ✅ `bundle validate`, `deploy`, `run` — failed i successful run potwierdzone przez użytkownika |
 
 ---
 
@@ -59,8 +59,11 @@ Projekt jest w trakcie implementacji. Poniżej pełny stan na moment przełącze
   - O-103, O-106 nienaruszone (nie było ich w batch_002) ✅
 - batch_002 ponownie → liczby bez zmian (idempotencja Silver) ✅
 
-### Batch_003 — NIE uruchamiany jeszcze
-Czeka na gotowy notebook 03 (quality_check). batch_003 zawiera:
+### Batch_003 — uruchomiony
+- Notebooki: notebook 03 → FAILED z `Quality gate failed: 1 invalid quantity records found (max_invalid_items=0)` ✅
+- Job (`databricks bundle run`): failed run (`max_invalid_items=0`) i successful run (`max_invalid_items=1`) ✅
+
+batch_003 zawiera:
 - E-3001 dla O-101 (seq=0) — late-arriving event, guard clause powinien go odrzucić
 - E-3002 dla O-108 → CANCELLED
 - E-3003 + E-3004 dla O-110 — duplikat w batchu (dedup przed MERGE)
@@ -81,21 +84,17 @@ Czeka na gotowy notebook 03 (quality_check). batch_003 zawiera:
 
 ## Co robić dalej — następny krok
 
-**Zaimplementować `notebooks/03_quality_check.py`** zgodnie z `implementation_plan.md` Etap 3.
+Zrobione: notebooki 01–03, `databricks.yml` (Etap 4), szkic DLT (Etap 6.1).
 
-Logika:
-1. Czytaj z `silver_order_items_current`
-2. Policz: `invalid_quantity_count` (qty <= 0), `invalid_price_count` (unit_price < 0), `missing_product_count` (product_missing = True)
-3. Widgety progów: `max_invalid_items` (default: 0), `max_missing_products` (default: 10)
-4. `raise Exception` jeśli przekroczono próg → Job FAILS (kontrolowany)
-5. Wyświetl quality summary
-
-Po notebook 03:
-- Uruchom batch_003 przez wszystkie trzy notebooki → zademonstruj failed run (qty=-1)
-- Zaimplementuj `databricks.yml` (Etap 4)
-- Uzupełnij `dlt/dlt_design_example.py` (Etap 6)
+Zostało:
+- Przykład Jobs API (Etap 6.2) — do opisania w `engineering_notes.md`
+- Etap 5: DESCRIBE HISTORY, Time Travel, schema enforcement/evolution (notebook 02 ma już DESCRIBE HISTORY dla `silver_orders_current`; brakuje Time Travel i opisu schema evolution)
 - Uzupełnij `engineering_notes.md` (Etap 7)
 - Uzupełnij `self_review.md` (Etap 7)
+- Opcjonalnie: quarantine table, `gold_data_quality_summary`
+
+Uwaga: `silver_order_items_current` zawiera teraz rekord O-111 (qty=-1) z batch_003,
+więc notebook 03 kończy się FAILED, dopóki `max_invalid_items=0`.
 
 ---
 
