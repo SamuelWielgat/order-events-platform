@@ -38,6 +38,7 @@ Projekt jest w trakcie implementacji. Poniżej pełny stan na moment przełącze
 | `notebooks/01_prepare_bronze.py` | ✅ Kompletny | ✅ batch_001, batch_002 × 2 (idempotencja) |
 | `notebooks/02_build_silver_and_gold.py` | ✅ Kompletny | ✅ batch_001, batch_002 × 2 (idempotencja) |
 | `notebooks/03_quality_check.py` | ✅ Kompletny | ✅ batch_003 → FAILED: `Quality gate failed: 1 invalid quantity records found (max_invalid_items=0)` |
+| `notebooks/04_delta_showcases.py` | ✅ Napisany (DESCRIBE HISTORY, Time Travel, schema enforcement/evolution). Poza Jobem, uruchamiany ręcznie | ❌ do uruchomienia w Databricks |
 | `dlt/dlt_design_example.py` | ✅ Szkic gotowy (Auto Loader, apply_changes, expectations, Gold MV) | — nie deployowany ani uruchamiany (zgodnie z wymaganiami kursu) |
 | `databricks.yml` | ✅ Kompletny (3 taski, parametry Joba, `base_parameters`) | ✅ `bundle validate`, `deploy`, `run` — failed i successful run potwierdzone przez użytkownika |
 
@@ -88,7 +89,7 @@ Zrobione: notebooki 01–03, `databricks.yml` (Etap 4), szkic DLT (Etap 6.1).
 
 Zostało:
 - Przykład Jobs API (Etap 6.2) — do opisania w `engineering_notes.md`
-- Etap 5: DESCRIBE HISTORY, Time Travel, schema enforcement/evolution (notebook 02 ma już DESCRIBE HISTORY dla `silver_orders_current`; brakuje Time Travel i opisu schema evolution)
+- Etap 5: uruchomić `notebooks/04_delta_showcases.py` w Databricks i zrobić screeny (DESCRIBE HISTORY, Time Travel O-105, enforcement/evolution)
 - Uzupełnij `engineering_notes.md` (Etap 7)
 - Uzupełnij `self_review.md` (Etap 7)
 - Opcjonalnie: quarantine table, `gold_data_quality_summary`
