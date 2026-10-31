@@ -38,7 +38,7 @@ Projekt jest w trakcie implementacji. Poniżej pełny stan na moment przełącze
 | `notebooks/01_prepare_bronze.py` | ✅ Kompletny | ✅ batch_001, batch_002 × 2 (idempotencja) |
 | `notebooks/02_build_silver_and_gold.py` | ✅ Kompletny | ✅ batch_001, batch_002 × 2 (idempotencja) |
 | `notebooks/03_quality_check.py` | ✅ Kompletny | ✅ batch_003 → FAILED: `Quality gate failed: 1 invalid quantity records found (max_invalid_items=0)` |
-| `notebooks/04_delta_showcases.py` | ✅ Napisany (DESCRIBE HISTORY, Time Travel, schema enforcement/evolution). Poza Jobem, uruchamiany ręcznie | ❌ do uruchomienia w Databricks |
+| `notebooks/04_delta_showcases.py` | ✅ Napisany (DESCRIBE HISTORY, Time Travel, schema enforcement/evolution). Poza Jobem, uruchamiany ręcznie | ⚠️ Time Travel zweryfikowany zapytaniami SQL (O-105: v1 PAID → v2 CANCELLED). Retencja `silver_orders_current` ustawiona na 30 dni. Cały notebook do ponownego uruchomienia w Databricks |
 | `dlt/dlt_design_example.py` | ✅ Szkic gotowy (Auto Loader, apply_changes, expectations, Gold MV) | — nie deployowany ani uruchamiany (zgodnie z wymaganiami kursu) |
 | `databricks.yml` | ✅ Kompletny (3 taski, parametry Joba, `base_parameters`) | ✅ `bundle validate`, `deploy`, `run` — failed i successful run potwierdzone przez użytkownika |
 
@@ -79,6 +79,7 @@ batch_003 zawiera:
 |---|---|---|
 | `cache()` nie działa | Serverless nie wspiera PERSIST TABLE | Czytamy z Delta table bezpośrednio |
 | `input_file_name()` deprecated w UC | Nie zwraca wartości przy Volumes | Używamy `F.col("_metadata.file_path")` |
+| Time Travel poza `deletedFileRetentionDuration` (7 dni) | `DESCRIBE HISTORY` pokazuje wersje (log 30 dni), ale `VERSION AS OF` zwraca `DELTA_UNSUPPORTED_TIME_TRAVEL_BEYOND_DELETED_FILE_RETENTION_DURATION` | `ALTER TABLE silver_orders_current SET TBLPROPERTIES ('delta.deletedFileRetentionDuration' = 'interval 30 days')` (wykonane 31.10.2026) |
 | Explain bez `Exchange hashpartitioning` | Photon + mała ilość danych → `PhotonTopK` zamiast shuffle | Dokumentujemy w engineering notes |
 
 ---

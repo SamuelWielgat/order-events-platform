@@ -3,7 +3,8 @@
 #
 # Odpowiedzialność (Etap 5 planu):
 #   - DESCRIBE HISTORY dla silver_orders_current (operacje MERGE)
-#   - Time Travel: stan O-105 przed i po MERGE z batch_002 (PAID -> CANCELLED)
+#   - Time Travel: stan zamówienia przed i po MERGE (domyślnie O-105: PAID -> CANCELLED
+#     z batch_002; inny przykład: O-108 -> CANCELLED z batch_003)
 #   - Schema enforcement: zapis z dodatkową kolumną source_priority jest odrzucany
 #   - Schema evolution: świadome dodanie kolumny przez mergeSchema
 #
@@ -64,28 +65,66 @@ display(
 # COMMAND ----------
 # MAGIC %md ## 3. Time Travel — przed i po MERGE
 # MAGIC
-# MAGIC Szukamy pierwszej wersji, w której zamówienie ma status docelowy
+# MAGIC Szukamy wersji, w której status zamówienia zmienił się na docelowy
 # MAGIC (domyślnie O-105: PAID -> CANCELLED w batch_002). Numer wersji wyznaczamy
-# MAGIC z historii, a nie na sztywno — numeracja zależy od liczby wcześniejszych
-# MAGIC uruchomień (np. powtórzony batch_002 też tworzy wersję MERGE).
+# MAGIC z historii, a nie na sztywno — numeracja zależy od liczby wcześniejszych uruchomień.
+# MAGIC
+# MAGIC Uwaga o retencji: `DESCRIBE HISTORY` pokazuje wszystkie wersje (log: 30 dni), ale
+# MAGIC `VERSION AS OF` działa tylko w oknie `delta.deletedFileRetentionDuration`
+# MAGIC (domyślnie 7 dni) i dopóki `VACUUM` nie usunął starych plików. Starsze wersje
+# MAGIC zwracają błąd `DELTA_UNSUPPORTED_TIME_TRAVEL_BEYOND_DELETED_FILE_RETENTION_DURATION`,
+# MAGIC więc notebook je pomija. Na tej tabeli ustawiono retencję 30 dni:
+# MAGIC
+# MAGIC `ALTER TABLE <silver_orders_current> SET TBLPROPERTIES ('delta.deletedFileRetentionDuration' = 'interval 30 days')`
+# MAGIC
+# MAGIC Retencji nie da się rozszerzyć wstecz poza pliki, które już usunięto.
 
 # COMMAND ----------
 
-versions = [r["version"] for r in history_df.select("version").orderBy("version").collect()]
+versions = sorted(r["version"] for r in history_df.select("version").collect())
 
-after_version = None
+
+def read_status(version):
+    """Status zamówienia w danej wersji; None gdy brak wiersza.
+    Zwraca (dostępna, status). Wersje starsze niż deletedFileRetentionDuration
+    (domyślnie 7 dni) są widoczne w DESCRIBE HISTORY, ale nie da się ich odczytać."""
+    try:
+        row = spark.sql(
+            f"SELECT status FROM {silver_orders_table} VERSION AS OF {version} "
+            f"WHERE order_id = '{order_id}'"
+        ).first()
+        return True, (row["status"] if row is not None else None)
+    except Exception as e:
+        if "DELTA_UNSUPPORTED_TIME_TRAVEL" in str(e):
+            return False, None
+        raise
+
+
+statuses = {}
+unavailable_versions = []
 for v in versions:
-    row = spark.sql(
-        f"SELECT status FROM {silver_orders_table} VERSION AS OF {v} WHERE order_id = '{order_id}'"
-    ).first()
-    if row is not None and row["status"] == changed_status:
+    available, status = read_status(v)
+    if available:
+        statuses[v] = status
+    else:
+        unavailable_versions.append(v)
+
+print(f"Wersje w historii: {versions}")
+print(f"Wersje poza retencją (nie do odczytu): {unavailable_versions}")
+
+# Szukamy wersji, w której status zmienił się NA docelowy (poprzednia wersja ma inny status)
+after_version = None
+for v in sorted(statuses):
+    if statuses[v] == changed_status and (v - 1) in statuses and statuses[v - 1] != changed_status:
         after_version = v
         break
 
-if after_version is None or after_version == 0:
+if after_version is None:
     print(
-        f"Nie znaleziono zmiany statusu {order_id} -> {changed_status} w historii. "
-        f"Uruchom najpierw batch_001 i batch_002."
+        f"Nie znaleziono dostępnej zmiany statusu {order_id} -> {changed_status}. "
+        f"Zmiana mogła wypaść poza retencję Time Travel albo jej poprzednia wersja jest "
+        f"już niedostępna. Ustaw widget order_id na zamówienie zmienione niedawno "
+        f"(np. O-108 z batch_003)."
     )
 else:
     before_version = after_version - 1
@@ -111,15 +150,13 @@ else:
     )
 
     # Wszystkie zamówienia zmienione lub dodane między wersjami (nie tylko wybrane)
-    before_df = (
-        spark.read.option("versionAsOf", before_version).table(silver_orders_table)
-        .select("order_id", F.col("status").alias("status_before"),
-                F.col("event_id").alias("event_id_before"))
+    before_df = spark.sql(
+        f"SELECT order_id, status AS status_before, event_id AS event_id_before "
+        f"FROM {silver_orders_table} VERSION AS OF {before_version}"
     )
-    after_df = (
-        spark.read.option("versionAsOf", after_version).table(silver_orders_table)
-        .select("order_id", F.col("status").alias("status_after"),
-                F.col("event_id").alias("event_id_after"))
+    after_df = spark.sql(
+        f"SELECT order_id, status AS status_after, event_id AS event_id_after "
+        f"FROM {silver_orders_table} VERSION AS OF {after_version}"
     )
     print(f"=== Zamówienia zmienione lub dodane między wersją {before_version} a {after_version} ===")
     display(
