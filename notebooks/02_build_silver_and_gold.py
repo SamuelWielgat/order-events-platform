@@ -74,9 +74,10 @@ display(bronze_df)
 #   2. event_sequence DESC — wyższy sequence = nowszy (gdy ts równe)
 #   3. event_id DESC      — ostatni fallback (lexicographic)
 #
-# Shuffle: PARTITION BY order_id wymusza Exchange hashpartitioning(order_id)
-# — Spark zbiera wszystkie eventy dla jednego order_id na jednym executorze.
-# Widoczne w explain() poniżej.
+# Shuffle: PARTITION BY order_id logicznie wymaga zebrania wszystkich eventów
+# jednego order_id razem (na dużych danych: Exchange hashpartitioning(order_id)).
+# W explain() poniżej, na tym małym zbiorze, Photon pokazuje PhotonSort + PhotonWindow
+# bez węzła Exchange — szczegóły w engineering_notes.md (sekcja Spark Explain).
 
 dedup_window = Window.partitionBy("order_id").orderBy(
     F.col("event_ts").desc(),
@@ -91,7 +92,7 @@ latest_events_df = (
     .drop("rn")
 )
 
-print("=== EXPLAIN: Window Function (shuffle widoczny jako Exchange) ===")
+print("=== EXPLAIN: Window Function (PARTITION BY order_id — sort/shuffle po kluczu) ===")
 latest_events_df.explain("formatted")
 
 print(f"Unikalnych order_id w batchu: {latest_events_df.count()}")
@@ -144,7 +145,7 @@ display(spark.table(silver_orders_table).orderBy("order_id"))
 # COMMAND ----------
 
 # products.csv ma ~5 wierszy — zawsze kwalifikuje się do broadcast join.
-# Spark automatycznie wybierze BroadcastHashJoin (brak shuffle po stronie products).
+# Spark automatycznie wybierze BroadcastHashJoin (duża strona nie jest shufflowana).
 # Wymuszamy broadcast explicite przez F.broadcast() — widoczne w explain() poniżej.
 
 products_df = (
@@ -189,7 +190,7 @@ items_exploded_df = (
 )
 
 # LEFT JOIN z products — broadcast po stronie products (mała tabela)
-# Brak shuffle na products! Widoczne w explain() poniżej.
+# Duża strona (pozycje zamówień) nie jest shufflowana. Widoczne w explain() poniżej.
 silver_items_df = (
     items_exploded_df
     .join(F.broadcast(products_df), on="product_id", how="left")
@@ -205,7 +206,7 @@ silver_items_df = (
     )
 )
 
-print("=== EXPLAIN: Broadcast join z products (BroadcastHashJoin, brak shuffle) ===")
+print("=== EXPLAIN: Broadcast join z products (BroadcastHashJoin) ===")
 silver_items_df.explain("formatted")
 
 print(f"Pozycji w silver_order_items_current: {silver_items_df.count()}")
@@ -265,7 +266,7 @@ daily_sales_df = (
     .orderBy("order_date")
 )
 
-print("=== EXPLAIN: Agregacja Gold daily (HashAggregate + shuffle) ===")
+print("=== EXPLAIN: Agregacja Gold daily (partial + final agregacja; Exchange zależy od rozmiaru danych) ===")
 daily_sales_df.explain("formatted")
 
 (
@@ -313,7 +314,7 @@ print(f"Zapisano {spark.table(gold_category_table).count()} rekordów do {gold_c
 display(spark.table(gold_category_table))
 
 # COMMAND ----------
-# MAGIC %md ## 12. DESCRIBE HISTORY — silver_orders_current
+# MAGIC %md ## 11. DESCRIBE HISTORY — silver_orders_current
 #
 # Pokazuje historię operacji MERGE — każde uruchomienie batcha
 # pozostawia ślad w historii Delta z timestampem i parametrami.

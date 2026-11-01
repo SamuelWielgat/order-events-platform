@@ -2,12 +2,55 @@
 
 ## Jak Uruchomić Projekt
 
-<!-- TODO: uzupełnić po implementacji -->
+**Dane.** Unity Catalog Volume (nie Workspace Files — lineage i access control przez UC):
 
-- gdzie wgrano dane (Unity Catalog Volume / Workspace Files)
-- jakie parametry ustawiać
-- kolejność uruchamiania batchy
-- jak uruchomić Job / Workflow
+```
+/Volumes/workspace/de_course_module_03_project/raw_data/data
+├── orders/batch_001_orders.json, batch_002_orders.json, batch_003_orders.json
+└── reference/products.csv
+```
+
+**Parametry** (widgety notebooków = parametry Joba):
+
+| Parametr | Domyślnie | Opis |
+|---|---|---|
+| `catalog_name` | `workspace` | Unity Catalog (pusty = `current_catalog()`) |
+| `schema_name` | `de_course_module_03_project` | Schema |
+| `data_base_path` | ścieżka Volume powyżej | Katalog z plikami |
+| `batch_id` | `batch_001` | Batch do przetworzenia |
+| `run_id` | `bundle_dev_run` | Audyt — zapisywany w Bronze |
+| `max_invalid_items` | `0` | Próg quality gate dla `quantity <= 0` i `unit_price < 0` |
+| `max_missing_products` | `10` | Próg dla brakujących produktów |
+
+**Kolejność batchy:**
+
+1. `batch_001` — baseline (4 nowe zamówienia)
+2. `batch_002` — aktualizacje, nowe zamówienia, brakujący produkt P-404
+3. `batch_002` ponownie — test idempotencji
+4. `batch_003` — late-arriving event, duplikat w batchu, `source_priority`, `qty=-1` (quality gate FAIL)
+
+**Ręcznie (Run all):** notebooki `01` → `02` → `03` z ustawionym `batch_id`
+(Git Folder w Databricks: `git push`, potem Pull).
+
+**Job / Workflow** (Databricks Asset Bundles, wymaga Databricks CLI i zalogowanego profilu):
+
+```bash
+databricks bundle validate --target dev
+databricks bundle deploy   --target dev
+databricks bundle run order_events_platform --target dev --params batch_id=batch_003,run_id=bundle_failed_run
+databricks bundle run order_events_platform --target dev --params batch_id=batch_003,max_invalid_items=1,run_id=bundle_success_run
+```
+
+Job ma 3 taski: `prepare_bronze` (retry 2×) → `build_silver_and_gold` → `quality_check` (`max_retries: 0`),
+timeout 1800 s, `max_concurrent_runs: 1`. Compute: Serverless.
+
+**Failed i successful run.** `batch_003` zawiera E-3005 (O-111, `qty=-1`), więc `quality_check` kończy się:
+`Quality gate failed: 1 invalid quantity records found (max_invalid_items=0)`. Successful run to ten sam batch
+z `max_invalid_items=1` — to obejście na potrzeby demonstracji (patrz „Co zmieniłbym w produkcji").
+Rekord O-111 zostaje w Silver, więc każdy kolejny run z progiem `0` też kończy się FAILED.
+
+**Notebook `04_delta_showcases`** (poza Jobem, uruchamiany ręcznie): `DESCRIBE HISTORY`, Time Travel,
+schema enforcement i evolution.
 
 ## Tabele i Grain
 
@@ -23,57 +66,227 @@
 
 ### MERGE
 
-<!-- TODO: uzupełnić -->
+| Tabela | Klucz | Strategia |
+|---|---|---|
+| `bronze_order_events` | `event_id` | `WHEN NOT MATCHED THEN INSERT *` — bez UPDATE, Bronze jest append-only |
+| `silver_orders_current` | `order_id` | MERGE z guard clause (niżej) |
+| `silver_order_items_current`, Gold | — | overwrite, nie MERGE |
 
-- gdzie używam MERGE
-- po jakim kluczu
-- jak chronię się przed starszym eventem (guard clause)
-- jak obsługuję duplikaty w source
+- **Idempotencja Bronze:** ponowne wczytanie tego samego batcha nie dodaje wierszy (`batch_002` × 2 → nadal 8 eventów).
+- **Guard clause w Silver:** `WHEN MATCHED AND source.event_sequence > target.event_sequence THEN UPDATE`
+  (oraz drugi warunek `source.event_ts > target.event_ts`). Late-arriving E-3001 (O-101, seq=0) nie nadpisał
+  E-2001 (seq=2): po MERGE z `batch_003` (wersja 5) O-101 nie zmienił się względem wersji 4.
+- **Duplikaty w source:** przed MERGE Window Function (`row_number` po `order_id`, sortowanie
+  `event_ts DESC, event_sequence DESC, event_id DESC`) zostawia 1 event na zamówienie. W `batch_003`
+  O-110 ma E-3003 (seq=1) i E-3004 (seq=2) — w Silver jest E-3004 i MERGE nie zgłasza błędu.
+- **Dlaczego overwrite dla items i Gold:** po `explode` klucz `(order_id, product_id)` jest niejednoznaczny
+  (ten sam produkt może wystąpić dwa razy), a Gold to agregaty liczone od nowa z Silver.
+  Overwrite Delta jest atomowy.
+- **Znane ryzyko:** drugi warunek (`event_ts >`) jest alternatywą, nie dopełnieniem pierwszego, więc event
+  z nowszym `event_ts`, ale niższym `event_sequence` też zaktualizuje wiersz. W danych kursu to się nie zdarza.
 
 ### Broadcast Join
 
-<!-- TODO: uzupełnić -->
-
-- którą tabelę broadcastuję i dlaczego
-- gdzie widać to w explain
+- Broadcastuję `products.csv` (kilka wierszy) przez `F.broadcast(products_df)` w LEFT JOIN do pozycji zamówień.
+  Mała tabela jest kopiowana do wykonawców, więc duża strona (pozycje zamówień) nie jest shufflowana po `product_id`.
+- W `explain`: `PhotonBroadcastHashJoin LeftOuter` (zamiast `SortMergeJoin`) — patrz „Spark Explain".
 
 ### Cache
 
-<!-- TODO: uzupełnić -->
-
-- czy używam cache, gdzie i dlaczego (lub dlaczego nie)
+Nie używam `cache()`. Serverless nie wspiera `PERSIST TABLE`, więc oba Gold czytają zapisaną tabelę
+`silver_order_items_current`. Na klasycznym klastrze `cache()` miałoby sens dla Silver Items
+(czytanego dwa razy: `gold_daily_sales` i `gold_category_sales`).
 
 ## Jakość Danych
 
-<!-- TODO: uzupełnić -->
+Błędne rekordy są **oznaczane i mierzone**, a nie usuwane: `silver_order_items_current` ma flagi
+`product_missing` i `is_valid_item` (`quantity > 0 AND unit_price >= 0 AND NOT product_missing`).
 
-- jakie walidacje
-- co zatrzymuje run
-- co jest tylko ostrzeżeniem
-- jak obsługuję brakujące produkty (P-404)
+| Metryka (notebook 03) | Warunek | Próg (widget) | Efekt przekroczenia |
+|---|---|---|---|
+| `invalid_quantity_count` | `quantity <= 0` | `max_invalid_items` = 0 | **FAIL** (`raise Exception`) |
+| `invalid_price_count` | `unit_price < 0` | `max_invalid_items` = 0 | **FAIL** |
+| `missing_product_count` | `product_missing = true` | `max_missing_products` = 10 | FAIL powyżej progu |
+
+- **Co zatrzymuje run:** `raise Exception("Quality gate failed: ...")` w tasku `quality_check`. Job zatrzymuje się
+  kontrolowanie, a `max_retries: 0` — ponowienie nie zmieni danych.
+- **Co jest tylko ostrzeżeniem:** brakujące produkty w liczbie ≤ progu (notebook wypisuje `WARNING`).
+- **Brakujący produkt P-404 (O-109):** LEFT JOIN zostawia wiersz z `product_name = NULL`, więc `product_missing = true`
+  i `is_valid_item = false`. Nie zatrzymuje runu (1 ≤ 10), ale jest wykluczony z Gold (filtr `is_valid_item`).
+  W `gold_category_sales` jest więc `coalesce(category, 'Unknown')`, ale w obecnych danych nic go nie używa —
+  rekordy bez kategorii odpadają wcześniej na filtrze.
+- **Stan po `batch_003`:** w Silver są dokładnie dwie niepoprawne pozycje — O-109/P-404 (brak produktu) i O-111/P-02
+  (`qty=-1`). O-111 ma status PAID, ale `is_valid_item = false`, więc nie trafia do Gold.
+- **Ograniczenie:** notebook 03 liczy metryki na całym Silver, nie tylko na bieżącym batchu, więc zły rekord
+  blokuje także kolejne runy z progiem 0.
 
 ## Delta / Unity Catalog
 
-<!-- TODO: uzupełnić po uruchomieniu -->
+**Pełne nazwy tabel** (managed Delta, katalog `workspace`, schema `de_course_module_03_project`):
+`workspace.de_course_module_03_project.bronze_order_events`, `silver_orders_current`, `silver_order_items_current`,
+`gold_daily_sales`, `gold_category_sales`. Stan po `batch_003`: 13 / 8 / 9 / 4 / 4 wierszy.
 
-- pełne nazwy tabel
-- przykład DESCRIBE HISTORY
-- przykład Time Travel
-- przykład schema enforcement (batch_003, source_priority)
-- przykład schema evolution
+**DESCRIBE HISTORY** (`silver_orders_current`): wersje 0–10 — `CREATE OR REPLACE TABLE AS SELECT` (v0, 4 wiersze),
+kolejne `MERGE` i dwa `OPTIMIZE` (v3, v6 — w notebookach nie ma polecenia `OPTIMIZE`, więc najpewniej wykonała je platforma automatycznie). MERGE z `batch_002` to v2,
+z `batch_003` to v5. Każde uruchomienie MERGE tworzy nową wersję, także gdy nic się nie zmienia: v4 (22.10) i v7–v10
+(25.10) to kolejne uruchomienia z `numTargetFilesAdded = 0`. Dla v4 → v5 sprawdziłem różnice w danych; dla v7–v10
+tylko stan O-105, O-108, O-110 i O-111 (taki sam jak w v5).
+
+**Time Travel** (notebook 04, O-105):
+
+| Wersja | status | event_id | event_sequence |
+|---|---|---|---|
+| `VERSION AS OF 1` (po `batch_001`) | PAID | E-1003 | 1 |
+| `VERSION AS OF 2` (po MERGE z `batch_002`) | CANCELLED | E-2002 | 2 |
+
+Między v4 a v5 (`batch_003`) zmieniły się: O-108 PAID → CANCELLED (E-2003 → E-3002) oraz doszły O-110 i O-111.
+O-101 nie zmienił się — late-arriving E-3001 został odrzucony przez guard clause.
+
+**Ograniczenie Time Travel.** `DESCRIBE HISTORY` pokazuje wersje (log: 30 dni), ale `VERSION AS OF` działa tylko
+w oknie `delta.deletedFileRetentionDuration` (domyślnie 7 dni, do czasu `VACUUM`). Przy pierwszym podejściu wersje
+0–4 (sprzed 10 dni) zwracały `DELTA_UNSUPPORTED_TIME_TRAVEL_BEYOND_DELETED_FILE_RETENTION_DURATION`. Dla
+`silver_orders_current` ustawiłem 30 dni (`ALTER TABLE ... SET TBLPROPERTIES
+('delta.deletedFileRetentionDuration' = 'interval 30 days')`) i wersje stały się czytelne, bo `VACUUM`
+nigdy nie był uruchamiany. Retencji nie da się przywrócić wstecz, jeśli pliki już usunięto.
+
+**Schema enforcement.** Notebook 01 czyta JSON z jawnym schematem, więc pole `source_priority` z `batch_003`
+jest pomijane już przy odczycie. Potwierdzone: `bronze_order_events` nie ma tej kolumny. Dodatkowo notebook 04
+pokazuje na tymczasowej tabeli, że zapis z nadmiarową kolumną bez `mergeSchema` Delta odrzuca.
+
+**Schema evolution.** Ten sam zapis z `option("mergeSchema", "true")` dodaje kolumnę (pokazane na tabeli
+tymczasowej, usuwanej na końcu notebooka 04). Decyzja w projekcie: `source_priority` zostaje poza Bronze, bo żadna
+warstwa jej nie używa. Gdyby była potrzebna: `ALTER TABLE ... ADD COLUMN source_priority STRING` i rozszerzenie
+`order_schema` w notebooku 01. `autoMerge` pozostaje wyłączone — evolution ma być świadomą decyzją.
 
 ## Spark Explain
 
-<!-- TODO: wkleić fragmenty planów po uruchomieniu -->
+Notebook 02 drukuje `explain("formatted")` dla Window, joinu i agregacji Gold. Fragmenty poniżej pochodzą z
+`EXPLAIN FORMATTED` uruchomionego jako **odpowiedniki SQL** tych zapytań na SQL warehouse (Serverless, Photon),
+a nie z wydruku notebooka — nazwy operatorów są te same, ale szczegóły mogą się nieco różnić.
 
-### Window Function
+### Window Function (dedup po `order_id`)
+
+```
+PhotonWindow  row_number() OVER (PARTITION BY order_id ORDER BY event_ts DESC, event_sequence DESC, event_id DESC)
++- PhotonSort [order_id ASC, event_ts DESC, event_sequence DESC, event_id DESC]
+   +- PhotonScan bronze_order_events   (DictionaryFilters: batch_id = batch_003)
+```
+
+Window wymaga, by wszystkie eventy jednego `order_id` trafiły obok siebie, stąd `PhotonSort` po kluczu partycji.
+W tym planie **nie ma** węzła `Exchange hashpartitioning(order_id)`. Prawdopodobna przyczyna to mały zbiór danych
+(kilkanaście wierszy) i działanie Photon, ale tego nie sprawdzałem np. przez liczbę partycji. Logicznie `PARTITION BY
+order_id` wymaga zebrania eventów jednego zamówienia razem, więc na dużych danych oczekiwałbym tu shuffle po
+`order_id` — to najkosztowniejsze miejsce pipeline'u.
+
 ### Join z products
-### Agregacja Gold
+
+```
+PhotonBroadcastHashJoin LeftOuter
+:- PhotonProject  <- PhotonGenerate explode(items) <- PhotonScan silver_orders_current
++- PhotonShuffleExchangeSource <- PhotonShuffleMapStage <- PhotonShuffleExchangeSink
+   <- PhotonFilter (product_id IS NOT NULL) <- Scan csv products.csv
+```
+
+`PhotonBroadcastHashJoin` zamiast `SortMergeJoin`. Strona z pozycjami zamówień (`explode` z `silver_orders_current`)
+wchodzi do joinu bez węzła wymiany; węzły `ShuffleExchange` występują tylko po stronie małej tabeli `products`
+(jej odczyt z CSV). Zakładam, że to etap przygotowania danych do broadcastu — nie sprawdzałem tego w dokumentacji.
+Zapytanie SQL użyte do planu miało wskazówkę `/*+ BROADCAST(p) */`, a w notebooku jest `F.broadcast(...)`.
+Bez wskazówki i dla dużej tabeli `products` oczekiwałbym `SortMergeJoin` z shuffle po `product_id`.
+
+### Agregacja Gold (`gold_daily_sales`)
+
+```
+PhotonGroupingAgg (final: count, sum, count distinct order_id)  GROUP BY to_date(event_ts)
++- PhotonGroupingAgg (merge)  <- PhotonGroupingAgg (merge, klucz: data + order_id)
+   <- PhotonGroupingAgg (partial) <- PhotonProject <- PhotonScan silver_order_items_current
+```
+
+Filtry `status = 'PAID'` i `is_valid_item` są wypchnięte do skanu (`DictionaryFilters`). `COUNT(DISTINCT order_id)`
+daje dodatkowy poziom agregacji (data + `order_id`). W planie również brak węzła `Exchange`.
+
+**Wniosek:** shuffle po stronie Window i agregacji jest konieczny logicznie, ale w planach z tego zbioru danych
+go nie widać (zob. „Ograniczenia środowiska" poniżej). Broadcast join jest widoczny wprost
+(`PhotonBroadcastHashJoin`).
+
+## Ograniczenia Środowiska
+
+Środowisko: Databricks Free Edition, Serverless compute z Photon, Unity Catalog.
+
+| Ograniczenie | Szczegół | Rozwiązanie |
+|---|---|---|
+| `cache()` nie działa | Serverless nie wspiera `PERSIST TABLE` | Obie tabele Gold czytają zapisaną tabelę Delta |
+| `input_file_name()` | Deprecated w Unity Catalog, nie zwraca wartości dla Volumes | `F.col("_metadata.file_path")` jako `source_file` |
+| Time Travel poza retencją | `VERSION AS OF` starszych niż `deletedFileRetentionDuration` (7 dni) zwraca błąd, choć `DESCRIBE HISTORY` je pokazuje | Retencja `silver_orders_current` ustawiona na 30 dni (opis w sekcji Delta) |
+| Brak `Exchange` w planach | Mały zbiór danych i Photon — plany Window i agregacji nie zawierają węzła `Exchange` | Opisane w sekcji Spark Explain; przyczyny nie weryfikowałem |
+| Quality gate po `batch_003` | Notebook 03 liczy metryki na całym Silver, więc O-111 (`qty=-1`) blokuje kolejne runy z progiem 0 | Successful run z `max_invalid_items=1` (obejście demo) — rozwiązanie produkcyjne w „Co zmieniłbym w produkcji" |
+
+## Delta Live Tables (alternatywa, bez deploymentu)
+
+Szkic: `dlt/dlt_design_example.py`. Nie był deployowany ani uruchamiany — to opis alternatywy, zgodnie z wymaganiami.
+
+| Część pipeline'u | Odpowiednik w DLT | Uwagi |
+|---|---|---|
+| Bronze (notebook 01) | `@dlt.table` + Auto Loader (`cloudFiles`) | Auto Loader sam wykrywa nowe pliki — odpada ręczny `batch_id` |
+| `silver_orders_current` | `dlt.apply_changes` (`keys=order_id`, `sequence_by`) | Zastępuje Window + MERGE z guard clause |
+| `silver_order_items_current` | `@dlt.table` + expectations | Przeliczany z aktualnego Silver |
+| Gold | `@dlt.table` (materializowany widok) | Agregacje deklaratywne |
+| Quality gate (notebook 03) | `@dlt.expect*` | Metryki jakości w event logu pipeline'u |
+
+**Przykładowa tabela:** `silver_order_items_dlt` (explode + join z produktami + `line_revenue`).
+
+**Przykładowe expectations:**
+
+```python
+@dlt.expect_or_fail("valid_quantity", "quantity > 0")   # zatrzymuje update (jak raise Exception)
+@dlt.expect_or_fail("valid_price", "unit_price >= 0")
+@dlt.expect("product_exists", "product_name IS NOT NULL")  # tylko metryka (jak WARNING dla P-404)
+```
+
+**Co trudniej w DLT:** warunek guard clause nie jest identyczny — `apply_changes` używa jednego `sequence_by`
+(w szkicu: struct `event_ts, event_sequence, event_id`), a w notebooku MERGE porównuje `event_sequence`
+oraz `event_ts` w dwóch osobnych warunkach. Pełną zgodność trzeba by zweryfikować na danych. Brakuje też
+w szkicu `gold_category_sales_dlt` (analogiczna do daily).
+
+## Jobs API (przykład)
+
+Uruchomienie Joba z parametrami, bez tokena w repozytorium:
+
+```bash
+curl --request POST "https://<workspace-host>/api/2.1/jobs/run-now" \
+  --header "Authorization: Bearer <TOKEN_FROM_SECRET_MANAGER>" \
+  --header "Content-Type: application/json" \
+  --data '{
+    "job_id": 123456789,
+    "job_parameters": {
+      "catalog_name": "workspace",
+      "schema_name": "de_course_module_03_project",
+      "batch_id": "batch_002",
+      "run_id": "api_run_001",
+      "max_invalid_items": "0"
+    }
+  }'
+```
+
+- **Kiedy:** wywołanie z zewnętrznego orkiestratora (np. Airflow, CI/CD) albo po pojawieniu się nowego pliku batcha.
+- **Token:** nie w repozytorium ani w kodzie. W produkcji w Databricks Secret Scope / menedżerze sekretów
+  (CI/CD pobiera go w czasie uruchomienia); najlepiej token service principal o minimalnych uprawnieniach.
+- **Parametry:** te same, które definiuje `databricks.yml` jako parametry Joba. Użyłem `job_parameters`, bo Job
+  ma zdefiniowane parametry; starsze `notebook_params` jest przeznaczone dla jobów bez parametrów Joba.
+  Nie testowałem tego requestu — `job_id` jest przykładowy.
 
 ## Co Zmieniłbym w Produkcji
 
-<!-- TODO: uzupełnić -->
-
-1. ...
-2. ...
-3. ...
+1. **Quarantine table zamiast obejścia progu.** Złe rekordy (np. O-111, `qty=-1`) trafiałyby do tabeli kwarantanny
+   i nie blokowały Silver, a gate sprawdzałby tylko nowe rekordy z bieżącego batcha. Dziś successful run po
+   `batch_003` wymaga podniesienia `max_invalid_items` do 1 — to obejście demo, nie rozwiązanie.
+2. **Incremental przetwarzanie Silver Items.** Overwrite całej tabeli skaluje się źle; przy większych danych MERGE po
+   kluczu pozycji (np. dodanie `position` z `posexplode`) albo Delta Live Tables / Structured Streaming.
+3. **Monitoring i alerty.** Powiadomienia o failed run (e-mail/Slack), metryki jakości zapisywane do tabeli
+   (`gold_data_quality_summary`) i dashboard; dziś wyniki bramki są tylko w logu notebooka.
+4. **Sekrety i dostęp.** Token do Jobs API w Secret Scope, uruchamianie Joba jako service principal, osobne
+   targety `dev`/`prod` w `databricks.yml` (dziś tylko `dev`) i CI/CD z `bundle validate` przed deployem.
+5. **Testy i kontrola schematu.** Testy jednostkowe transformacji (Window, `is_valid_item`) na małych danych,
+   kontrakt schematu dla źródła (zmiana, np. `source_priority`, wymaga decyzji, a nie cichego pominięcia),
+   oraz osobna retencja Time Travel dla tabel, które mają być audytowane (`delta.deletedFileRetentionDuration`).
+6. **Spójność guard clause.** Ujednolicić warunek MERGE do jednego porównania krotki
+   `(event_ts, event_sequence, event_id)`, zamiast dwóch alternatywnych warunków.
