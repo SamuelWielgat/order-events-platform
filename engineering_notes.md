@@ -73,17 +73,26 @@ schema enforcement i evolution.
 | `silver_order_items_current`, Gold | — | overwrite, nie MERGE |
 
 - **Idempotencja Bronze:** ponowne wczytanie tego samego batcha nie dodaje wierszy (`batch_002` × 2 → nadal 8 eventów).
-- **Guard clause w Silver:** `WHEN MATCHED AND source.event_sequence > target.event_sequence THEN UPDATE`
-  (oraz drugi warunek `source.event_ts > target.event_ts`). Late-arriving E-3001 (O-101, seq=0) nie nadpisał
-  E-2001 (seq=2): po MERGE z `batch_003` (wersja 5) O-101 nie zmienił się względem wersji 4.
+- **Guard clause w Silver:** jedno porównanie krotki, w tej samej kolejności co tie-breaker Window:
+  `WHEN MATCHED AND struct(source.event_ts, source.event_sequence, source.event_id) >
+  struct(target.event_ts, target.event_sequence, target.event_id) THEN UPDATE`. Late-arriving E-3001 (O-101, seq=0)
+  nie nadpisał E-2001 (seq=2): po MERGE z `batch_003` O-101 nie zmienił się. Ten sam event wczytany ponownie jest
+  równy, a nie większy, więc MERGE niczego nie aktualizuje (metryki: `numTargetRowsUpdated = 0`).
 - **Duplikaty w source:** przed MERGE Window Function (`row_number` po `order_id`, sortowanie
   `event_ts DESC, event_sequence DESC, event_id DESC`) zostawia 1 event na zamówienie. W `batch_003`
   O-110 ma E-3003 (seq=1) i E-3004 (seq=2) — w Silver jest E-3004 i MERGE nie zgłasza błędu.
 - **Dlaczego overwrite dla items i Gold:** po `explode` klucz `(order_id, product_id)` jest niejednoznaczny
   (ten sam produkt może wystąpić dwa razy), a Gold to agregaty liczone od nowa z Silver.
   Overwrite Delta jest atomowy.
-- **Znane ryzyko:** drugi warunek (`event_ts >`) jest alternatywą, nie dopełnieniem pierwszego, więc event
-  z nowszym `event_ts`, ale niższym `event_sequence` też zaktualizuje wiersz. W danych kursu to się nie zdarza.
+- **Zmiana guard clause i test.** Pierwotnie były dwa warunki połączone `OR` (`event_sequence >` albo `event_ts >`).
+  Zastąpiłem je jednym porównaniem krotki, żeby MERGE i Window zawsze zgadzały się, który event jest nowszy
+  (przy `OR` event z wyższym `event_sequence`, ale starszym `event_ts` nadpisałby wiersz). Na danych kursu oba
+  warianty dają ten sam wynik. Po zmianie przeszedłem cały Job w osobnym schemacie
+  (`batch_001` → `batch_002` → `batch_002` → `batch_003` fail → `batch_003` z progiem 1) i porównałem wszystkie
+  tabele wiersz po wierszu z wersją sprzed zmiany: identyczne. Przypadki konfliktu `event_ts` / `event_sequence`
+  sprawdziłem tylko na literałach w Spark SQL (`SELECT struct(...) > struct(...)`), nie na danych w tabeli:
+  wyższy `event_sequence` przy starszym `event_ts` daje `false`, a nowszy `event_ts` przy niższym
+  `event_sequence` daje `true`.
 
 ### Broadcast Join
 
@@ -126,28 +135,41 @@ Błędne rekordy są **oznaczane i mierzone**, a nie usuwane: `silver_order_item
 `workspace.de_course_module_03_project.bronze_order_events`, `silver_orders_current`, `silver_order_items_current`,
 `gold_daily_sales`, `gold_category_sales`. Stan po `batch_003`: 13 / 8 / 9 / 4 / 4 wierszy.
 
-**DESCRIBE HISTORY** (`silver_orders_current`): wersje 0–10 — `CREATE OR REPLACE TABLE AS SELECT` (v0, 4 wiersze),
-kolejne `MERGE` i dwa `OPTIMIZE` (v3, v6 — w notebookach nie ma polecenia `OPTIMIZE`, więc najpewniej wykonała je platforma automatycznie). MERGE z `batch_002` to v2,
-z `batch_003` to v5. Każde uruchomienie MERGE tworzy nową wersję, także gdy nic się nie zmienia: v4 (22.10) i v7–v10
-(25.10) to kolejne uruchomienia z `numTargetFilesAdded = 0`. Dla v4 → v5 sprawdziłem różnice w danych; dla v7–v10
-tylko stan O-105, O-108, O-110 i O-111 (taki sam jak w v5).
+**DESCRIBE HISTORY** (`silver_orders_current`), przebieg `batch_001` → `batch_002` → `batch_002` → `batch_003` →
+`batch_003` (Job, 5 runów):
 
-**Time Travel** (notebook 04, O-105):
+| Wersja | Operacja | Skąd |
+|---|---|---|
+| v0 | `CREATE OR REPLACE TABLE AS SELECT` | `batch_001` (4 wiersze) |
+| v1 | `MERGE` | `batch_002` (2 wstawione, 2 zaktualizowane) |
+| v2 | `OPTIMIZE` | w notebookach nie ma tego polecenia, więc najpewniej wykonała je platforma automatycznie |
+| v3 | `MERGE` | `batch_002` ponownie (0 wstawionych, 0 zaktualizowanych) |
+| v4 | `MERGE` | `batch_003` (2 wstawione, 1 zaktualizowany) |
+| v5 | `OPTIMIZE` | jak v2 |
+| v6 | `MERGE` | `batch_003` ponownie (0 wstawionych, 0 zaktualizowanych) |
+| v7 | `SET TBLPROPERTIES` | retencja Time Travel 30 dni |
+
+Każde uruchomienie MERGE tworzy nową wersję, także gdy nic się nie zmienia (v3, v6). Metryki pochodzą z
+`operationMetrics`. W `operationParameters.matchedPredicates` widać warunek guard clause jako porównanie `struct(...)`.
+
+**Time Travel** (notebook 04, O-105 — domyślny widget `order_id`):
 
 | Wersja | status | event_id | event_sequence |
 |---|---|---|---|
-| `VERSION AS OF 1` (po `batch_001`) | PAID | E-1003 | 1 |
-| `VERSION AS OF 2` (po MERGE z `batch_002`) | CANCELLED | E-2002 | 2 |
+| `VERSION AS OF 0` (po `batch_001`) | PAID | E-1003 | 1 |
+| `VERSION AS OF 1` (po MERGE z `batch_002`) | CANCELLED | E-2002 | 2 |
 
-Między v4 a v5 (`batch_003`) zmieniły się: O-108 PAID → CANCELLED (E-2003 → E-3002) oraz doszły O-110 i O-111.
-O-101 nie zmienił się — late-arriving E-3001 został odrzucony przez guard clause.
+Notebook sam wyznacza te wersje z historii (pierwsza wersja, w której status zmienił się na `CANCELLED`).
+Między v3 a v4 (`batch_003`) zmieniły się: O-108 PAID → CANCELLED (E-2003 → E-3002) oraz doszły O-110 i O-111.
+O-101 jest przy E-2001 zarówno w v3, jak i w v6 — late-arriving E-3001 został odrzucony przez guard clause.
 
 **Ograniczenie Time Travel.** `DESCRIBE HISTORY` pokazuje wersje (log: 30 dni), ale `VERSION AS OF` działa tylko
-w oknie `delta.deletedFileRetentionDuration` (domyślnie 7 dni, do czasu `VACUUM`). Przy pierwszym podejściu wersje
-0–4 (sprzed 10 dni) zwracały `DELTA_UNSUPPORTED_TIME_TRAVEL_BEYOND_DELETED_FILE_RETENTION_DURATION`. Dla
-`silver_orders_current` ustawiłem 30 dni (`ALTER TABLE ... SET TBLPROPERTIES
-('delta.deletedFileRetentionDuration' = 'interval 30 days')`) i wersje stały się czytelne, bo `VACUUM`
-nigdy nie był uruchamiany. Retencji nie da się przywrócić wstecz, jeśli pliki już usunięto.
+w oknie `delta.deletedFileRetentionDuration` (domyślnie 7 dni, do czasu `VACUUM`). W pierwszym schemacie wersje
+sprzed 10 dni zwracały `DELTA_UNSUPPORTED_TIME_TRAVEL_BEYOND_DELETED_FILE_RETENTION_DURATION`; po ustawieniu
+30 dni (`ALTER TABLE ... SET TBLPROPERTIES ('delta.deletedFileRetentionDuration' = 'interval 30 days')`) były
+znów czytelne, bo `VACUUM` nigdy nie był uruchamiany. Obecne tabele zostały odbudowane od zera, a ta sama
+retencja jest ustawiona na `silver_orders_current` (v7). Wersje starsze niż 30 dni przestaną być dostępne,
+a retencji nie da się przywrócić wstecz, jeśli pliki już usunięto.
 
 **Schema enforcement.** Notebook 01 czyta JSON z jawnym schematem, więc pole `source_priority` z `batch_003`
 jest pomijane już przy odczycie. Potwierdzone: `bronze_order_events` nie ma tej kolumny. Dodatkowo notebook 04
@@ -242,10 +264,11 @@ Szkic: `dlt/dlt_design_example.py`. Nie był deployowany ani uruchamiany — to 
 @dlt.expect("product_exists", "product_name IS NOT NULL")  # tylko metryka (jak WARNING dla P-404)
 ```
 
-**Co trudniej w DLT:** warunek guard clause nie jest identyczny — `apply_changes` używa jednego `sequence_by`
-(w szkicu: struct `event_ts, event_sequence, event_id`), a w notebooku MERGE porównuje `event_sequence`
-oraz `event_ts` w dwóch osobnych warunkach. Pełną zgodność trzeba by zweryfikować na danych. Brakuje też
-w szkicu `gold_category_sales_dlt` (analogiczna do daily).
+**Co trudniej w DLT:** `apply_changes` ma wbudowaną logikę „nowszy wygrywa" przez `sequence_by` (w szkicu: struct
+`event_ts, event_sequence, event_id`, czyli ta sama krotka co w guard clause notebooka). Ręczne warunki MERGE,
+np. inne reguły dla wybranych statusów, byłyby trudniejsze do wyrażenia w deklaratywnym API. Szkic nie był
+uruchamiany, więc zgodność zachowania nie jest zweryfikowana. Brakuje też w szkicu `gold_category_sales_dlt`
+(analogiczna do daily).
 
 ## Jobs API (przykład)
 
@@ -288,5 +311,8 @@ curl --request POST "https://<workspace-host>/api/2.1/jobs/run-now" \
 5. **Testy i kontrola schematu.** Testy jednostkowe transformacji (Window, `is_valid_item`) na małych danych,
    kontrakt schematu dla źródła (zmiana, np. `source_priority`, wymaga decyzji, a nie cichego pominięcia),
    oraz osobna retencja Time Travel dla tabel, które mają być audytowane (`delta.deletedFileRetentionDuration`).
-6. **Spójność guard clause.** Ujednolicić warunek MERGE do jednego porównania krotki
-   `(event_ts, event_sequence, event_id)`, zamiast dwóch alternatywnych warunków.
+6. **Test przypadków brzegowych MERGE.** Guard clause jest sprawdzony na danych kursu. Dodałbym test na syntetycznych
+   eventach z konfliktem `event_ts` i `event_sequence` oraz z wartościami `NULL`. W Spark SQL `NULL` w polu
+   struktury jest traktowany jako wartość mniejsza od każdej innej, więc event z `NULL` w `event_sequence` nigdy
+   nie nadpisze wiersza z liczbą, a wiersz z `NULL` zostanie nadpisany — to trzeba świadomie zaakceptować albo
+   odrzucić takie eventy w walidacji.

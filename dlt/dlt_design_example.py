@@ -83,8 +83,9 @@ def bronze_order_events_dlt():
 # MAGIC   nie nadpisze nowszego. Struct jest porównywany leksykograficznie, co odpowiada
 # MAGIC   naszemu tie-breakerowi event_ts -> event_sequence -> event_id.
 # MAGIC
-# MAGIC Różnica: w notebooku guard clause porównuje `event_sequence`, tu cały struct —
-# MAGIC pełną zgodność zachowania trzeba by zweryfikować na danych.
+# MAGIC Guard clause w notebooku 02 porównuje tę samą krotkę
+# MAGIC (event_ts, event_sequence, event_id) — zgodność zachowania na danych
+# MAGIC trzeba by jeszcze zweryfikować uruchamiając pipeline (szkic nie był uruchamiany).
 
 # COMMAND ----------
 

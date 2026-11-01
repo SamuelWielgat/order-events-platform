@@ -105,6 +105,12 @@ display(latest_events_df)
 # Chroni przed late-arriving events — np. E-3001 (seq=0) nie nadpisze
 # E-2001 (seq=2), który jest już w Silver.
 #
+# Porównanie to jedna krotka (struct) w tej samej kolejności co tie-breaker Window:
+#   (event_ts, event_sequence, event_id)  — porównanie leksykograficzne.
+# Dzięki temu MERGE i Window zawsze zgadzają się, który event jest nowszy.
+# Ten sam event wczytany ponownie jest równy (nie większy), więc nie aktualizuje wiersza
+# — idempotencja.
+#
 # Dlaczego MERGE, a nie overwrite:
 #   - Zachowuje wiersze bez nowych eventów w batchgu (np. O-103 nie jest
 #     w batch_002, ale musi pozostać w Silver)
@@ -128,9 +134,8 @@ else:
         MERGE INTO {silver_orders_table} AS target
         USING silver_incoming AS source
           ON target.order_id = source.order_id
-        WHEN MATCHED AND source.event_sequence > target.event_sequence
-            THEN UPDATE SET *
-        WHEN MATCHED AND source.event_ts > target.event_ts
+        WHEN MATCHED AND struct(source.event_ts, source.event_sequence, source.event_id)
+                       > struct(target.event_ts, target.event_sequence, target.event_id)
             THEN UPDATE SET *
         WHEN NOT MATCHED
             THEN INSERT *
